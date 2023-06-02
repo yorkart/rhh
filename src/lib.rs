@@ -1,6 +1,35 @@
+use std::borrow::Borrow;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::mem;
+
+pub trait AsByte {
+    fn as_byte(&self) -> &[u8];
+}
+
+impl AsByte for String {
+    fn as_byte(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
+impl AsByte for str {
+    fn as_byte(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
+impl AsByte for Vec<u8> {
+    fn as_byte(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl<'a> AsByte for &'a [u8] {
+    fn as_byte(&self) -> &[u8] {
+        self
+    }
+}
 
 struct HashElem<K, V>
 where
@@ -45,7 +74,6 @@ pub struct HashMap<K, V>
 where
     K: Eq + Hash + AsByte,
 {
-    // hashes: Vec<u64>,
     elems: Vec<Option<HashElem<K, V>>>,
 
     len: u64,
@@ -80,9 +108,34 @@ where
         }
     }
 
-    pub fn get(&self, key: &K) -> Option<&V> {
+    pub fn get<Q>(&self, key: &Q) -> Option<&V>
+    where
+        Q: ?Sized + Eq + Hash + AsByte,
+        K: Borrow<Q>,
+    {
         self.index(key)
             .map(|i| &self.elems[i].as_ref().unwrap().value)
+    }
+
+    pub fn get_mut<Q>(&mut self, key: &Q) -> Option<&mut V>
+    where
+        Q: ?Sized + Eq + Hash + AsByte,
+        K: Borrow<Q>,
+    {
+        self.index(key)
+            .map(|i| &mut self.elems[i].as_mut().unwrap().value)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&'_ K, &'_ V)> {
+        self.elems
+            .iter()
+            .filter_map(|e| e.as_ref().map(|e| (&e.key, &e.value)))
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&'_ K, &'_ mut V)> {
+        self.elems
+            .iter_mut()
+            .filter_map(|e| e.as_mut().map(|e| (&e.key, &mut e.value)))
     }
 
     pub fn insert(&mut self, key: K, val: V) {
@@ -108,20 +161,7 @@ where
             }
         }
 
-        let HashMap {
-            elems,
-            len: n,
-            capacity,
-            threshold,
-            mask,
-            load_factor,
-        } = new_map;
-        self.elems = elems;
-        self.len = n;
-        self.capacity = capacity;
-        self.threshold = threshold;
-        self.mask = mask;
-        self.load_factor = load_factor;
+        mem::swap(&mut new_map, self);
     }
 
     fn insert_raw(&mut self, hash: u64, key: K, val: V) -> bool {
@@ -168,7 +208,11 @@ where
     }
 
     /// index returns the position of key in the hash map.
-    fn index(&self, key: &K) -> Option<usize> {
+    fn index<Q>(&self, key: &Q) -> Option<usize>
+    where
+        Q: ?Sized + Eq + Hash + AsByte,
+        K: Borrow<Q>,
+    {
         let hash = hash_key(key);
         let mut pos = (hash & self.mask as u64) as usize;
 
@@ -177,7 +221,7 @@ where
             let e = self.elems[pos].as_ref()?;
             if dist > distance(e.hash, pos, self.capacity) {
                 return None;
-            } else if e.hash == hash && e.key.eq(key) {
+            } else if e.hash == hash && key.borrow().eq(e.key.borrow()) {
                 return Some(pos);
             }
 
@@ -193,10 +237,6 @@ where
     pub fn capacity(&self) -> u64 {
         self.capacity
     }
-
-    // fn distance_histogram(&self) -> Vec<usize>{
-    //
-    // }
 }
 
 impl<K, V> HashMap<K, V>
@@ -213,31 +253,53 @@ where
     }
 }
 
-pub trait AsByte {
-    fn as_byte(&self) -> &[u8];
+pub struct Iter<'a, K: 'a, V: 'a>
+where
+    K: Eq + Hash + AsByte,
+{
+    map: &'a HashMap<K, V>,
+    at: usize,
+    num_found: usize,
 }
 
-impl AsByte for String {
-    fn as_byte(&self) -> &[u8] {
-        self.as_bytes()
+impl<'a, K: 'a, V: 'a> Iter<'a, K, V>
+where
+    K: Eq + Hash + AsByte,
+{
+    pub fn new(map: &'a HashMap<K, V>) -> Self {
+        Self {
+            map,
+            at: 0,
+            num_found: 0,
+        }
     }
 }
 
-impl AsByte for str {
-    fn as_byte(&self) -> &[u8] {
-        self.as_bytes()
-    }
-}
+impl<'a, K, V> Iterator for Iter<'a, K, V>
+where
+    K: Eq + Hash + AsByte,
+{
+    type Item = (&'a K, &'a V);
 
-impl AsByte for Vec<u8> {
-    fn as_byte(&self) -> &[u8] {
-        self.as_slice()
-    }
-}
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if self.at >= self.map.elems.len() {
+                return None;
+            }
 
-impl<'a> AsByte for &'a [u8] {
-    fn as_byte(&self) -> &[u8] {
-        self
+            let e = &self.map.elems[self.at];
+            self.at += 1;
+
+            if let Some(e) = e {
+                self.num_found += 1;
+                return Some((&e.key, &e.value));
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let hint = self.map.len() as usize - self.num_found;
+        (hint, Some(hint))
     }
 }
 
@@ -249,8 +311,6 @@ where
     let mut xx_hash = twox_hash::XxHash64::with_seed(0);
     xx_hash.write(key.as_byte());
     let mut h = xx_hash.finish();
-
-    // println!("hash 1: {}, {:?}", h, h.to_be_bytes());
 
     if h == 0 {
         h = 1;
@@ -265,29 +325,6 @@ where
     }
 
     h
-
-    // let n = h.to_be_bytes();
-    // let mut h = i64::from_be_bytes(n);
-    //
-    // // let mut xx_hash = twox_hash::XxHash64::with_seed(0);
-    // // key.hash(&mut xx_hash);
-    // // let mut h = xx_hash.finish();
-    // // println!("hash 2: {}", h);
-    //
-    // if h == 0 {
-    //     h = 1;
-    // } else if h < 0 {
-    //     // influxdb, what the fuck!!! why change the hash value?
-    //     h = 0 - h;
-    // }
-    //
-    // h as u64
-}
-
-/// hash_u64 computes a hash of an int64. Hash is always non-zero.
-pub fn hash_u64(key: u64) -> u64 {
-    let buf = key.to_be_bytes();
-    hash_key(&buf.as_ref())
 }
 
 /// distance returns the probe distance for a hash in a slot index.
@@ -324,18 +361,12 @@ mod tests {
     #[test]
     fn test_hash() {
         let n = hash_key("xyz");
-        println!("{}", n);
+        assert_eq!(91681375387435871, n);
     }
 
     #[test]
     fn test_hash_map() {
         let mut m = HashMap::new();
-
-        // m.insert("16".as_bytes().to_vec(), "16".to_string());
-        // m.insert("45".as_bytes().to_vec(), "45".to_string());
-        // m.insert("56".as_bytes().to_vec(), "56".to_string());
-        // m.insert("79".as_bytes().to_vec(), "79".to_string());
-        // m.insert("83".as_bytes().to_vec(), "83".to_string());
 
         let size = 512;
         for i in 0..size {
@@ -348,7 +379,13 @@ mod tests {
             let key = i.to_string();
             let val = m.get(&key).unwrap();
             assert_eq!(val.as_str(), key.as_str());
-            println!("{}:{}", key, val);
+        }
+
+        for (k, v) in m.iter_mut() {
+            println!("{} => {}", k, v);
+        }
+        for (k, v) in m.iter() {
+            println!("{} => {}", k, v);
         }
     }
 }
