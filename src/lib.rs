@@ -25,9 +25,15 @@ impl AsByte for Vec<u8> {
     }
 }
 
-impl<'a> AsByte for &'a [u8] {
+impl AsByte for [u8] {
     fn as_byte(&self) -> &[u8] {
         self
+    }
+}
+
+impl<const N: usize> AsByte for [u8;N] {
+    fn as_byte(&self) -> &[u8] {
+        &self[..]
     }
 }
 
