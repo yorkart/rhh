@@ -92,10 +92,10 @@ where
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
-        Self::with_capacity_load_factor(capacity, 90)
+        Self::with_capacity_and_factor(capacity, 90)
     }
 
-    pub fn with_capacity_load_factor(capacity: usize, load_factor: usize) -> Self {
+    pub fn with_capacity_and_factor(capacity: usize, load_factor: usize) -> Self {
         let mut elems = Vec::with_capacity(capacity);
         elems.resize_with(capacity, || None);
         Self {
@@ -126,10 +126,12 @@ where
             .map(|i| &mut self.elems[i].as_mut().unwrap().value)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&'_ K, &'_ V)> {
-        self.elems
-            .iter()
-            .filter_map(|e| e.as_ref().map(|e| (&e.key, &e.value)))
+    pub fn keys(&self) -> Keys<'_, K, V> {
+        Keys::new(self.iter())
+    }
+
+    pub fn iter(&self) -> Iter<'_, K, V> {
+        Iter::new(self)
     }
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (&'_ K, &'_ mut V)> {
@@ -150,7 +152,7 @@ where
 
     fn grow(&mut self) {
         let mut new_map =
-            Self::with_capacity_load_factor((self.capacity * 2) as usize, self.load_factor);
+            Self::with_capacity_and_factor((self.capacity * 2) as usize, self.load_factor);
         for e in &mut self.elems {
             let e = e.take();
             if let Some(HashElem {
@@ -239,19 +241,29 @@ where
     }
 }
 
-impl<K, V> HashMap<K, V>
+impl<K, V> Debug for HashMap<K, V>
 where
     K: Eq + Hash + AsByte + Debug,
     V: Debug,
 {
-    pub(crate) fn print(&self) {
-        self.elems.iter().enumerate().for_each(|(i, e)| {
-            if let Some(e) = e {
-                println!("{} -> {:?}", i, e);
-            }
-        })
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_map().entries(self.iter()).finish()
     }
 }
+
+// impl<K, V> HashMap<K, V>
+// where
+//     K: Eq + Hash + AsByte + Debug,
+//     V: Debug,
+// {
+//     pub(crate) fn print(&self) {
+//         self.elems.iter().enumerate().for_each(|(i, e)| {
+//             if let Some(e) = e {
+//                 println!("{} -> {:?}", i, e);
+//             }
+//         })
+//     }
+// }
 
 pub struct Iter<'a, K: 'a, V: 'a>
 where
@@ -300,6 +312,36 @@ where
     fn size_hint(&self) -> (usize, Option<usize>) {
         let hint = self.map.len() as usize - self.num_found;
         (hint, Some(hint))
+    }
+}
+
+pub struct Keys<'a, K: 'a, V: 'a>
+where
+    K: Eq + Hash + AsByte,
+{
+    inner: Iter<'a, K, V>,
+}
+
+impl<'a, K: 'a, V: 'a> Keys<'a, K, V>
+where
+    K: Eq + Hash + AsByte,
+{
+    pub fn new(inner: Iter<'a, K, V>) -> Self {
+        Self { inner }
+    }
+}
+
+impl<'a, K, V> Iterator for Keys<'a, K, V>
+where
+    K: Eq + Hash + AsByte,
+{
+    type Item = &'a K;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.inner.next() {
+            Some((k, _)) => Some(k),
+            None => None,
+        }
     }
 }
 
@@ -373,7 +415,7 @@ mod tests {
             let key = i.to_string();
             m.insert(key.clone(), key);
         }
-        m.print();
+        // m.print();
 
         for i in 0..size {
             let key = i.to_string();
